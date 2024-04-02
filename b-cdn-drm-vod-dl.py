@@ -89,6 +89,8 @@ class BunnyVideoDRM:
                                             embed_page).group(1)
             file_name_escaped = unescape(file_name_unescaped)
             self.file_name = re.sub(r'\.[^.]*$.*', '.mp4', file_name_escaped)
+            if not self.file_name.endswith('.mp4'):
+                self.file_name += '.mp4'
         self.path = path if path else '~/Videos/Bunny CDN/'
 
     def prepare_dl(self) -> str:
