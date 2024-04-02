@@ -119,7 +119,7 @@ class BunnyVideoDRM:
                 f'https://iframe.mediadelivery.net/{self.guid}/playlist.drm',
                 params=params,
                 headers=self.headers['playlist'])
-            resolutions = re.findall(r'RESOLUTION=(.*)', response.text)[::-1]
+            resolutions = re.findall(r'\s*(.*?)\s*/video\.drm', response.text)[::-1]
             if not resolutions:
                 sys.exit(2)
             else:
