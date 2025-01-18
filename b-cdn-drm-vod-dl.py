@@ -153,7 +153,6 @@ class BunnyVideoDRM:
                 "User-Agent": self.user_agent["user-agent"],
             },
             "concurrent_fragment_downloads": 10,
-            # 'external_downloader': 'aria2c'
             "nocheckcertificate": True,
             "outtmpl": self.file_name,
             "restrictfilenames": True,
