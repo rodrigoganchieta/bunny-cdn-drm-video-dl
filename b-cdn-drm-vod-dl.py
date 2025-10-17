@@ -20,10 +20,11 @@ class BunnyVideoDRM:
     session = requests.Session()
     session.headers.update(user_agent)
 
-    def __init__(self, referer="https://127.0.0.1/", embed_url="", name="", path=""):
+    def __init__(self, referer="https://127.0.0.1/", embed_url="", name="", path="", debug=False):
         self.referer = referer if referer else sys.exit(1)
         self.embed_url = embed_url if embed_url else sys.exit(1)
         self.guid = urlparse(embed_url).path.split("/")[-1]
+        self.debug = debug
         self.headers = {
             "embed": {
                 "authority": "iframe.mediadelivery.net",
@@ -62,28 +63,86 @@ class BunnyVideoDRM:
         }
         embed_response = self.session.get(embed_url, headers=self.headers["embed"])
         embed_page = embed_response.text
-        try:
-            self.server_id = re.search(
-                r"https://video-(.*?)\.mediadelivery\.net", embed_page
-            ).group(1)
-        except AttributeError:
-            sys.exit(1)
-        self.headers["ping|activate"].update(
-            {"authority": f"video-{self.server_id}.mediadelivery.net"}
-        )
-        search = re.search(r'contextId=(.*?)&secret=(.*?)"', embed_page)
-        self.context_id, self.secret = search.group(1), search.group(2)
+        
+        # Debug: save HTML page
+        if self.debug:
+            debug_file = f"debug_embed_{self.guid}.html"
+            with open(debug_file, "w", encoding="utf-8") as f:
+                f.write(embed_page)
+            print(f"Debug: HTML page saved to {debug_file}")
+            print(f"Debug: Status code: {embed_response.status_code}")
+            print(f"Debug: Response size: {len(embed_page)} characters")
+        
+        # Check if it's a DRM-protected video or not
+        is_drm_search = re.search(r'var isEntDrm\s*=\s*(true|false)', embed_page)
+        self.is_drm = is_drm_search and is_drm_search.group(1) == 'true' if is_drm_search else True
+        
+        # Search for playlist URL (with or without DRM)
+        playlist_url_search = re.search(r'var urlPlaylistUrl\s*=\s*["\']([^"\']*)["\']', embed_page)
+        if playlist_url_search:
+            self.playlist_url = playlist_url_search.group(1)
+            if self.debug:
+                print(f"Debug: Playlist URL found: {self.playlist_url}")
+                print(f"Debug: DRM-protected video: {self.is_drm}")
+        
+        if not self.is_drm:
+            # DRM-free video - use direct URL
+            print("Detected: DRM-free video")
+            if not playlist_url_search:
+                print("Error: Could not find playlist URL.")
+                sys.exit(1)
+            # No need for contextId and secret
+            self.context_id = None
+            self.secret = None
+        else:
+            # DRM-protected video - continue with the normal flow
+            print("Detected: DRM-protected video")
+            try:
+                self.server_id = re.search(
+                    r"https://video-(.*?)\.mediadelivery\.net", embed_page
+                ).group(1)
+            except AttributeError:
+                print("Error: Could not find server_id.")
+                sys.exit(1)
+            self.headers["ping|activate"].update(
+                {"authority": f"video-{self.server_id}.mediadelivery.net"}
+            )
+            search = re.search(r'contextId=(.*?)&secret=(.*?)"', embed_page)
+            try:
+                self.context_id, self.secret = search.group(1), search.group(2)
+                if self.debug:
+                    print(f"Debug: contextId={self.context_id}")
+                    print(f"Debug: secret={self.secret}")
+            except AttributeError:
+                print("Error: Could not find contextId and secret in the embed page.")
+                print("Verify if the embed URL is correct and if the video is accessible.")
+                if self.debug:
+                    print("\nDebug: Searching for alternative patterns in HTML...")
+                    alt_patterns = [
+                        r'contextId["\']?\s*[:=]\s*["\']([^"\']*)["\']',
+                        r'secret["\']?\s*[:=]\s*["\']([^"\']*)["\']',
+                        r'data-context[^>]*=["\']([^"\']*)["\']',
+                    ]
+                    for pattern in alt_patterns:
+                        matches = re.findall(pattern, embed_page, re.IGNORECASE)
+                        if matches:
+                            print(f"Padrão {pattern} encontrou: {matches[:3]}")
+                sys.exit(1)
         if name:
             self.file_name = f"{name}.mp4"
         else:
-            file_name_unescaped = re.search(
-                r'og:title" content="(.*?)"', embed_page
-            ).group(1)
-            file_name_escaped = unescape(file_name_unescaped)
-            self.file_name = re.sub(r"\.[^.]*$.*", ".mp4", file_name_escaped)
-            if not self.file_name.endswith(".mp4"):
-                self.file_name += ".mp4"
-        self.path = path if path else "~/Videos/Bunny CDN/"
+            try:
+                file_name_unescaped = re.search(
+                    r'og:title" content="(.*?)"', embed_page
+                ).group(1)
+                file_name_escaped = unescape(file_name_unescaped)
+                self.file_name = re.sub(r"\.[^.]*$.*", ".mp4", file_name_escaped)
+                if not self.file_name.endswith(".mp4"):
+                    self.file_name += ".mp4"
+            except AttributeError:
+                print("Warning: Could not extract file name. Using default name.")
+                self.file_name = f"{self.guid}.mp4"
+        self.path = path if path else "."
 
     def prepare_dl(self) -> str:
         def ping(time: float, paused: str, res: str):
@@ -143,10 +202,17 @@ class BunnyVideoDRM:
         return resolution
 
     def download(self):
-        resolution = self.prepare_dl()
-        url = [
-            f"https://iframe.mediadelivery.net/{self.guid}/{resolution}/video.drm?contextId={self.context_id}"
-        ]
+        if self.is_drm:
+            # DRM-protected video - use original method
+            resolution = self.prepare_dl()
+            url = [
+                f"https://iframe.mediadelivery.net/{self.guid}/{resolution}/video.drm?contextId={self.context_id}"
+            ]
+        else:
+            # DRM-free video - use direct playlist URL
+            url = [self.playlist_url]
+            print(f"Downloading from: {url[0]}")
+        
         ydl_opts = {
             "http_headers": {
                 "Referer": self.embed_url,
@@ -175,13 +241,15 @@ class BunnyVideoDRM:
 if __name__ == "__main__":
     video = BunnyVideoDRM(
         # insert the referer between the quotes below (address of your webpage)
-        referer="",
+        referer="https://iframe.mediadelivery.net/",
         # paste your embed link
         embed_url="",
         # you can override file name, no extension
         name="",
         # you can override download path
-        path=r"",
+        path=r"./",
+        # enable debug mode to see details
+        debug=False,
     )
     # video.session.close()
     video.download()
